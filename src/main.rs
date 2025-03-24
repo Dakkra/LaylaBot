@@ -1,13 +1,18 @@
+use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
 use once_cell::sync::Lazy;
-use serenity::all::{GuildId, Member, UserId};
+use serenity::all::{ChannelId, GuildId, Member, UserId};
 use serenity::async_trait;
 use serenity::model::channel::Message;
 use serenity::prelude::*;
 use std::collections::HashMap;
 use std::env;
+use std::io::Error;
+use tokio::task::JoinHandle;
 
 static USER_MESSAGED_STATE: Lazy<Mutex<HashMap<UserInfo, bool>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+
+static LAST_GUILD_MESSAGE_CHANNEL: Lazy<Mutex<Option<ChannelId>>> = Lazy::new(|| Mutex::new(None));
 
 struct Handler;
 
@@ -33,6 +38,10 @@ impl EventHandler for Handler {
                 user_info.user_id, user_info.guild_id
             );
             USER_MESSAGED_STATE.lock().await.insert(user_info, true);
+            LAST_GUILD_MESSAGE_CHANNEL
+                .lock()
+                .await
+                .replace(msg.channel_id);
         }
 
         // Commands
@@ -88,6 +97,28 @@ struct UserInfo {
     guild_id: GuildId,
 }
 
+#[post("/say")]
+async fn say(_req_body: String) -> impl Responder {
+    if let Some(_channel_id) = LAST_GUILD_MESSAGE_CHANNEL.lock().await.as_ref() {
+        // TODO us bot to send message to the last messaged channel
+    }
+    HttpResponse::Ok().body("Message sent")
+}
+
+#[get("/")]
+async fn hello() -> impl Responder {
+    HttpResponse::Ok().body("Hello world!")
+}
+
+#[post("/echo")]
+async fn echo(req_body: String) -> impl Responder {
+    HttpResponse::Ok().body(req_body)
+}
+
+async fn manual_hello() -> impl Responder {
+    HttpResponse::Ok().body("Hey there!")
+}
+
 #[tokio::main]
 async fn main() {
     // Login with a bot token from the environment
@@ -103,8 +134,23 @@ async fn main() {
         .await
         .expect("Err creating client");
 
-    // Start listening for events by starting a single shard
-    if let Err(why) = client.start().await {
-        println!("Client error: {why:?}");
+    // Starts the http server with actix
+    let result = HttpServer::new(|| {
+        App::new()
+            .service(say)
+            .service(hello)
+            .service(echo)
+            .route("/hey", web::get().to(manual_hello))
+    })
+    .bind(("127.0.0.1", 8080));
+    let mut web_handle: Option<JoinHandle<Result<(), Error>>> = None;
+    if let Ok(server) = result {
+        web_handle = Option::from(tokio::spawn(server.run()));
+    }
+
+    client.start().await.unwrap();
+
+    if let Some(handle) = web_handle {
+        handle.await.unwrap().expect("Couldn't await web handle");
     }
 }
